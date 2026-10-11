@@ -241,9 +241,22 @@ class ManagedServer(unittest.TestCase):
         proc = self.start()
         self.wait_for_health(proc)
         rooms = []
-        for _ in range(2):
+        save_payloads = []
+        for room_index in range(2):
+            payload = bytearray(68)
+            payload[:4] = b"8000"
+            payload[0x41] = room_index
+            payload[0x14] = 255 if room_index else 0
+            save_payloads.append(payload.hex())
             rooms.append([self.post('create', {'v': 4, 'nick': 'host',
-                'pre_ok': True, 'session_type': 'party'})])
+                'pre_ok': True, 'session_type': 'party',
+                'adventure_save': save_payloads[-1]})])
+        for invalid in ('ff' * 68, '38303030' + '00' * 61 + 'ff0000', 'x' * 136):
+            with self.assertRaises(urllib.error.HTTPError) as bad:
+                self.post('create', {'v': 4, 'nick': 'bad', 'session_type': 'party',
+                    'adventure_save': invalid})
+            self.assertEqual(bad.exception.code, 400)
+            self.assertEqual(json.load(bad.exception)['error'], 'bad_adventure_save')
         for n in range(1, 7):
             rooms[0].append(self.post('join', {'v': 4, 'room': rooms[0][0]['room'],
                 'nick': 'player%d' % n, 'pre_ok': True}))
@@ -254,7 +267,7 @@ class ManagedServer(unittest.TestCase):
         rooms[1].append(self.post('join', {'v': 4, 'room': rooms[1][0]['room'],
             'nick': 'other-player', 'pre_ok': True}))
         codes = []
-        for members in rooms:
+        for room_index, members in enumerate(rooms):
             auth = lambda m: {'v': 4, 'room': m['room'], 'token': m['token']}
             match = self.post('start', auth(members[0]))['match']
             for m in members:
@@ -264,6 +277,8 @@ class ManagedServer(unittest.TestCase):
                 self.assertEqual(plan['players'], len(members))
                 self.assertEqual(plan['slot'], slot)
                 self.assertEqual(plan['session_type'], 'party')
+                self.assertEqual(plan['adventure_save'], save_payloads[room_index])
+                self.assertEqual(plan['netmode'], 'lockstep')
             codes.append(plan['code'])
         self.assertNotEqual(*codes)
         sockets = []

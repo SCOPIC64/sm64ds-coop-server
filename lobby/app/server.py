@@ -1152,7 +1152,7 @@ VERB_FIELDS = {
                   # appear from v2. session_type is a v4 optional (ADVENTURE);
                   # do_create checks its value against SESSION_TYPES.
                   {"pre_ok": 1, "color": V_COLOR, "shoes": V_COLOR,
-                   "session_type": V_SESSION}),
+                   "session_type": V_SESSION, "adventure_save": V_SESSION}),
     "join":      (("v", "room", "nick"),
                   {"pre_ok": 1, "color": V_COLOR, "shoes": V_COLOR}),
     "poll":      (("v", "room", "token", "cursor"), {"wait": 1}),
@@ -1268,6 +1268,15 @@ def do_create(body, who, now):
         if not isinstance(session_type, str) or session_type not in SESSION_TYPES:
             return 400, {"error": "bad_session_type"}
 
+    adventure_save = body.get("adventure_save", "")
+    if "adventure_save" in body:
+        if session_type != "party" or not isinstance(adventure_save, str) or \
+                len(adventure_save) != 136 or any(c not in "0123456789abcdef" for c in adventure_save):
+            return 400, {"error": "bad_adventure_save"}
+        payload = bytes.fromhex(adventure_save)
+        if payload[:4] != b"8000" or payload[0x41] > 3 or payload[0x42] > 2:
+            return 400, {"error": "bad_adventure_save"}
+
     if not BUCKETS.allow_create(who, now):
         return 429, {"error": "too_fast"}
     if len(ROOMS) >= MAX_ROOMS:
@@ -1287,6 +1296,7 @@ def do_create(body, who, now):
     # narrow unless it says otherwise.
     room = Room(code, now, request_version(body))
     room.session_type = session_type
+    room.adventure_save = adventure_save
     token = new_token()
     # The host plays if the dial has room for anybody at all. The host is also
     # the session's parent, so a host who is not playing is not a thing any
@@ -1786,6 +1796,9 @@ def member_plan(room, seat):
     if room.session_type == "party":
         plan["host_level"] = room.match_map
         plan["netmode"] = "rollback"
+        if getattr(room, "adventure_save", ""):
+            plan["adventure_save"] = room.adventure_save
+            plan["netmode"] = "lockstep"
     return plan
 
 

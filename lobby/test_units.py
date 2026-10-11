@@ -840,6 +840,7 @@ _FIELD_SAMPLES = {
     "color": "ff8800",
     "shoes": "1a2b3c",
     "session_type": "adventure",
+    "adventure_save": "38303030" + "00" * 64,
 }
 
 
