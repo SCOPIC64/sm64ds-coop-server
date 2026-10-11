@@ -17,6 +17,7 @@ in milliseconds instead of in real minutes.
 import json
 import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "app"))
 
@@ -34,6 +35,11 @@ def _locked(fn):
     """
     def wrapper(*a, **kw):
         with S.LOCK:
+            # sweep receives a simulated clock; events it emits must use that
+            # same clock instead of the host uptime (which differs on CI).
+            if fn.__name__ == "sweep":
+                with patch.object(S.time, "monotonic", return_value=a[0]):
+                    return fn(*a, **kw)
             return fn(*a, **kw)
     wrapper.__name__ = fn.__name__
     return wrapper
