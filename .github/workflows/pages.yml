@@ -13,8 +13,6 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    # Enable PAGES_ENABLED after Settings > Pages permits GitHub Actions.
-    if: github.event_name == 'workflow_dispatch' || vars.PAGES_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

@@ -9,17 +9,15 @@ the blank page alone does **not** bring multiplayer online.
 
 ## Blank GitHub Pages website
 
-In this repository's **Settings → Pages**, choose **GitHub Actions** as the
+This public repository uses **Settings → Pages → GitHub Actions** as its
 source. The **Blank website** workflow publishes only `site/`. It contains an
 empty page with no visible content, analytics, requests, buttons, or scripts.
-Run that workflow after enabling Pages. To publish automatically on changes,
-set the repository Actions variable `PAGES_ENABLED` to `true`.
+Changes to `site/` on `main` publish automatically. The workflow can also be
+run manually from Actions.
 
 The normal project URL is `https://scopic64.github.io/sm64ds-coop-server/`;
-the workflow reports the actual deployed URL. At setup, GitHub's Pages settings
-reported **"Upgrade or make this repository public to enable Pages"**. This
-repository remains private. Page deployment is opt-in until that account
-restriction is resolved; server checks still run automatically.
+the workflow reports the actual deployed URL. The blank page is static. The
+lobby API and UDP relay still require a separate online server.
 
 ## Run the actual server online
 
@@ -28,7 +26,9 @@ IPv4 address, and inbound TCP 80/443 plus UDP 41234. No game ROM or assets are
 needed on the host. GitHub-hosted Actions runners are used only for tests and
 page publication, not as a persistent multiplayer host.
 
-1. Clone this private repository on the host using your normal GitHub access.
+1. Clone this repository on the host:
+   `git clone https://github.com/SCOPIC64/sm64ds-coop-server.git`, then
+   `cd sm64ds-coop-server`.
 2. Copy `.env.example` to `.env`. Set `SITE_ADDRESS` to a DNS name pointing
    directly at the host. Set `RELAY_PUBLIC_ADDR` to that host's public IPv4
    address or DNS name, followed by `:41234`.
