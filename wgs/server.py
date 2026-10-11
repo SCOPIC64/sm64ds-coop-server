@@ -64,8 +64,16 @@ async def serve(args, bind, host):
         transport, protocol = await loop.create_datagram_endpoint(
             lambda: relay.RelayProtocol(relay.DEFAULT_IDLE_S),
             local_addr=(bind, args.relay_port), family=socket.AF_INET)
-        worker = threading.Thread(target=httpd.serve_forever, daemon=True)
-        worker.start()
+        sock = transport.get_extra_info('socket')
+        if sock is not None:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
+            except OSError:
+                pass
+        candidate = threading.Thread(target=httpd.serve_forever, daemon=True)
+        candidate.start()
+        worker = candidate
         threading.Thread(target=lobby.reaper, daemon=True).start()
 
         def request_stop(*_):
