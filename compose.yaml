@@ -35,8 +35,8 @@ services:
       RELAY_ADDR: ${RELAY_PUBLIC_ADDR:?Set RELAY_PUBLIC_ADDR in .env}
       # Only Caddy reaches this port; it supplies the real peer address.
       TRUST_XFF: "1"
-      MAX_SEATS: "16"
-      GAME_MAX_PLAYERS: "16"
+      MAX_SEATS: "7"
+      GAME_MAX_PLAYERS: "7"
       MAX_ROOMS: "64"
       MAX_WAITERS: "96"
     networks: [lobby]
@@ -64,8 +64,8 @@ services:
     environment:
       SM64DS_RELAY_BIND: 0.0.0.0
       SM64DS_RELAY_PORT: "41234"
-      SM64DS_RELAY_MAX_CHILDREN: "15"
-      SM64DS_RELAY_RATE_PPS: "240"
+      SM64DS_RELAY_MAX_CHILDREN: "6"
+      SM64DS_RELAY_RATE_PPS: "600"
     ports: ["41234:41234/udp"]
     networks: [relay]
     read_only: true

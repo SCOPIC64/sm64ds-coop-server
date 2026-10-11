@@ -23,6 +23,8 @@ lobby API and UDP relay still require a separate online server.
 
 See [the WGS setup guide](wgs/README.md) for the combined Windows lobby and
 relay executable, custom plugin settings, and LAN/internet networking.
+For a free setup without card verification or router forwarding, follow
+[the Playit and Cloudflare WGS guide](deploy/NO-CARD-WGS.md).
 
 ## Run the actual server online
 
@@ -58,11 +60,23 @@ that would make clients share the proxy's rate limit identity.
 
 ## Game integration status
 
-The game must be configured to use this lobby URL and relay address. The current
-custom menu's public lobby browser is unfinished; hosting this repository does
-not automatically connect that menu or redirect existing clients. The relay
-and lobby protocol are preserved from the source port, including up to 16 seats.
-This is server infrastructure, not a complete hosted game or a game download.
+The online game menu creates or joins separate rooms using a saved server
+profile, with seven players per room including the host. Each match gets its
+own relay session key. The deployment and WGS process both enforce that cap.
+The underlying protocol retains its existing compatibility limits.
+
+See [the complete setup and playing steps](deploy/SETUP.md). Hosting both
+services on an external VM keeps players' connections away from the home
+computer's public address. The client saves a Windows DPAPI encrypted text
+file in AppData; its key is managed by Windows, not stored in source. The
+public relay address remains visible to a player inspecting their own traffic.
+Server deployment and distribution of its public profile are required before
+the new menu can connect. This repository contains no home IP or game ROM.
+The [free WGS tunnel setup](deploy/NO-CARD-WGS.md) instead keeps the PC as the
+server while proxying both public connections. Authenticated discovery lets
+the game find a restarted Cloudflare tunnel automatically. Its RSA private
+key remains in the server owner's Windows key store; public profiles contain
+only the public relay endpoint and the server's public identity key.
 
 ## Checks
 

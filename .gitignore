@@ -7,3 +7,5 @@ wgs/build/
 wgs/dist/
 wgs/*.spec
 wgs/server.json
+server-profile.json
+*.backup

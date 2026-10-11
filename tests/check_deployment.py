@@ -12,7 +12,7 @@ with urllib.request.urlopen(base + '/', timeout=10) as response:
     assert response.headers['X-Content-Type-Options'] == 'nosniff'
 with urllib.request.urlopen(base + '/port/lobby/health', timeout=10) as response:
     health = json.load(response)
-    assert health['ok'] and health['contract_v'] == 4 and health['dial_max'] == 16
+    assert health['ok'] and health['contract_v'] == 4 and health['dial_max'] == 7
 
 def post(verb, body):
     req = urllib.request.Request(base + '/port/lobby/' + verb,

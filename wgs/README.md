@@ -3,6 +3,8 @@
 This launcher runs the HTTP lobby and UDP relay in one process for
 [WGS](https://wgsserver.com/manual). No ROM or game executable is required.
 WGS runs the services on your Windows PC, which must stay on while hosting.
+For automatic connection through public proxies without card verification,
+follow [the free Playit and Cloudflare steps](../deploy/NO-CARD-WGS.md).
 
 ## Build
 
@@ -14,7 +16,7 @@ The executable depends on its adjacent `_internal` directory.
 ## Configure WGS
 
 Create or edit a custom game plugin with executable `sm64ds-server.exe`,
-Steam App ID `0`, game port `41234`, query port `8091`, and max players `16`.
+Steam App ID `0`, game port `41234`, query port `8091`, and max players `7`.
 The query-port field records the HTTP lobby port; this service does not implement
 Steam queries, RCON, or WGS player counts. Set the server's custom arguments to
 `--lobby-port 8091`. WGS supplies `-port` and `-maxplayers` itself. If you change
@@ -29,7 +31,8 @@ Edit `server.json` in that directory:
 
 For LAN use, replace the hostname with the server PC's LAN IPv4 address. For
 internet use, use its public IPv4 address or DNS name. Do not include a port;
-the launcher uses WGS's game port. `127.0.0.1` works only on the same PC.
+the launcher uses WGS's game port unless `relay_public_port` is configured
+for a tunnel's assigned external port. `127.0.0.1` works only on the same PC.
 
 Click **Start** in WGS. Its console should show `READY`. Check
 `http://127.0.0.1:8091/port/lobby/health` and test UDP from a second machine:
@@ -48,8 +51,10 @@ For internet clients, the router/firewall must route TCP `8091` and UDP `41234`
 to this PC. CGNAT may require a public address from the ISP or a separate host.
 This direct configuration ignores forwarded-IP headers. For HTTPS, use the
 documented Docker/Caddy deployment or configure a suitable proxy separately.
-Hosting these services does not finish the game's public lobby menu or select
-the server in game clients; see the root README's integration status.
+For automatic in-game rooms and AppData profiles, see
+[the complete setup guide](../deploy/SETUP.md). Hosting WGS on the home PC
+directly exposes that PC's public endpoint to internet players. Use an
+external VM for the lobby and relay to keep the home address private.
 
 ## Test
 

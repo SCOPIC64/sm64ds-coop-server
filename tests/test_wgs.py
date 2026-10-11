@@ -14,8 +14,9 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 import urllib.request
+import urllib.error
 
-from wgs.server import ConsoleOutput, serve
+from wgs.server import ConsoleOutput, serve, configuration
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,6 +44,17 @@ class BlockingConsole:
 
 
 class ConsoleChecks(unittest.IsolatedAsyncioTestCase):
+    def test_tunnel_port_is_advertised_separately_from_local_port(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config=Path(folder)/'server.json'
+            config.write_text(json.dumps({'bind':'127.0.0.1','relay_public_host':'relay.example.com','relay_public_port':41702}))
+            with mock.patch('sys.argv',['server','--config',str(config),'-port','41234']),mock.patch.dict(os.environ):
+                args,bind,host=configuration()
+                self.assertEqual(args.relay_port,41234)
+                self.assertEqual(args.relay_public_port,41702)
+                self.assertEqual(os.environ['RELAY_ADDR'],'relay.example.com:41702')
+                self.assertEqual(bind,'127.0.0.1')
+
     def test_blocked_output_has_bounded_memory(self):
         sink = BlockingConsole()
         output = ConsoleOutput(sink, capacity=4, chunk_size=16)
@@ -167,7 +179,7 @@ class ManagedServer(unittest.TestCase):
         proc = self.start()
         health = self.wait_for_health(proc)
         self.assertTrue(health['ok'])
-        self.assertEqual(health['dial_max'], 16)
+        self.assertEqual(health['dial_max'], 7)
         room = self.post('create', {'v': 4, 'nick': 'wgs-check'})
         self.assertTrue(room['token'])
         self.post('leave', {'v': 4, 'room': room['room'], 'token': room['token']})
@@ -224,6 +236,66 @@ class ManagedServer(unittest.TestCase):
     def test_invalid_config_exits(self):
         self.config.write_text('{"relay_public_host":"0.0.0.0"}')
         self.assertNotEqual(self.start().wait(timeout=20), 0)
+
+    def test_seven_seats_per_room_and_independent_matches(self):
+        proc = self.start()
+        self.wait_for_health(proc)
+        rooms = []
+        for _ in range(2):
+            rooms.append([self.post('create', {'v': 4, 'nick': 'host',
+                'pre_ok': True, 'session_type': 'party'})])
+        for n in range(1, 7):
+            rooms[0].append(self.post('join', {'v': 4, 'room': rooms[0][0]['room'],
+                'nick': 'player%d' % n, 'pre_ok': True}))
+        with self.assertRaises(urllib.error.HTTPError) as full:
+            self.post('join', {'v': 4, 'room': rooms[0][0]['room'], 'nick': 'eighth'})
+        self.assertEqual(full.exception.code, 409)
+        self.assertEqual(json.load(full.exception)['error'], 'room_full')
+        rooms[1].append(self.post('join', {'v': 4, 'room': rooms[1][0]['room'],
+            'nick': 'other-player', 'pre_ok': True}))
+        codes = []
+        for members in rooms:
+            auth = lambda m: {'v': 4, 'room': m['room'], 'token': m['token']}
+            match = self.post('start', auth(members[0]))['match']
+            for m in members:
+                self.post('ready', dict(auth(m), match=match))
+            for slot, m in enumerate(members):
+                plan = self.post('poll', dict(auth(m), cursor=0, wait=0))['plan']
+                self.assertEqual(plan['players'], len(members))
+                self.assertEqual(plan['slot'], slot)
+                self.assertEqual(plan['session_type'], 'party')
+            codes.append(plan['code'])
+        self.assertNotEqual(*codes)
+        sockets = []
+        try:
+            for n in range(8):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sockets.append(sock)
+                sock.settimeout(2)
+                sock.connect(('127.0.0.1', self.udp))
+                sock.send(b'SMRC' + bytes((1, 0 if n == 0 else 1, 0, 0)) + codes[0].encode())
+                expected = 0 if n < 7 else 1
+                self.assertEqual(sock.recv(64)[5], expected)
+            sockets[0].send(b'first room broadcast')
+            for sock in sockets[1:7]:
+                self.assertEqual(sock.recv(64), b'first room broadcast')
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as other:
+                other.settimeout(.2)
+                other.connect(('127.0.0.1', self.udp))
+                other.send(b'SMRC' + bytes((1, 0, 0, 0)) + codes[1].encode())
+                self.assertEqual(other.recv(64)[5], 0)
+                sockets[1].send(b'first room private')
+                self.assertEqual(sockets[0].recv(64), b'first room private')
+                with self.assertRaises(socket.timeout):
+                    other.recv(64)
+        finally:
+            for sock in sockets:
+                sock.close()
+            for members in rooms:
+                self.post('leave', {'v': 4, 'room': members[0]['room'], 'token': members[0]['token']})
+            proc.stdin.write(b'stop\n')
+            proc.stdin.flush()
+            self.assertEqual(proc.wait(timeout=10), 0)
 
     def test_udp_conflict_does_not_leave_lobby_running(self):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as occupied:

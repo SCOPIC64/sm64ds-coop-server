@@ -29,6 +29,7 @@ jobs:
       - run: python -m unittest discover -s tests -p test_wgs.py -v
         env:
           WGS_SERVER_EXE: ${{ github.workspace }}\wgs\dist\sm64ds-server\sm64ds-server.exe
+      - run: python -m unittest tests.test_discovery tests.test_tunnels -v
       - uses: actions/upload-artifact@v4
         with:
           name: sm64ds-wgs-windows
