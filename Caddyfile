@@ -1,0 +1,13 @@
+{$SITE_ADDRESS}
+
+handle /port/lobby/* {
+    reverse_proxy lobby:8091
+}
+
+handle {
+    root * /srv
+    header X-Content-Type-Options nosniff
+    header Referrer-Policy no-referrer
+    header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    file_server
+}

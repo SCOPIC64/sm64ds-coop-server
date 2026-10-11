@@ -1,0 +1,86 @@
+name: sm64ds-coop-server
+
+services:
+  web:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?Set SITE_ADDRESS in .env}
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./site:/srv:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [lobby]
+    depends_on:
+      lobby:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  lobby:
+    build:
+      context: .
+      dockerfile: lobby/Dockerfile
+    restart: unless-stopped
+    environment:
+      LISTEN_ADDR: 0.0.0.0
+      LISTEN_PORT: "8091"
+      RELAY_ADDR: ${RELAY_PUBLIC_ADDR:?Set RELAY_PUBLIC_ADDR in .env}
+      # Only Caddy reaches this port; it supplies the real peer address.
+      TRUST_XFF: "1"
+      MAX_SEATS: "16"
+      GAME_MAX_PLAYERS: "16"
+      MAX_ROOMS: "64"
+      MAX_WAITERS: "96"
+    networks: [lobby]
+    read_only: true
+    tmpfs: [/tmp:size=8m]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    pids_limit: 256
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/port/lobby/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  relay:
+    build:
+      context: .
+      dockerfile: relay/Dockerfile
+    restart: unless-stopped
+    environment:
+      SM64DS_RELAY_BIND: 0.0.0.0
+      SM64DS_RELAY_PORT: "41234"
+      SM64DS_RELAY_MAX_CHILDREN: "15"
+      SM64DS_RELAY_RATE_PPS: "240"
+    ports: ["41234:41234/udp"]
+    networks: [relay]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+    pids_limit: 32
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+networks:
+  lobby:
+  relay:
+
+volumes:
+  caddy_data:
+  caddy_config:

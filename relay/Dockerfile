@@ -1,0 +1,7 @@
+FROM python:3.12-alpine
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY relay/relay.py ./relay.py
+USER 10001:10001
+EXPOSE 41234/udp
+CMD ["python3", "relay.py"]

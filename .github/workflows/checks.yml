@@ -1,0 +1,34 @@
+name: Server checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python lobby/test_units.py
+      - run: python lobby/test_client.py selftest
+      - run: python lobby/test_security.py
+      - run: python relay/test_client.py selftest
+      - run: python -m unittest discover -s tests -v
+  deployment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SITE_ADDRESS: ':80'
+      RELAY_PUBLIC_ADDR: '127.0.0.1:41234'
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+      - run: docker compose up --build --wait --wait-timeout 120
+      - run: python tests/check_deployment.py http://127.0.0.1
+      - run: python relay/test_client.py remote-check --host 127.0.0.1 --count 20
+      - if: always()
+        run: docker compose logs --no-color
+      - if: always()
+        run: docker compose down
