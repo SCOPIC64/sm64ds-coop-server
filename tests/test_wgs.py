@@ -1,4 +1,6 @@
 """Exercise the managed process; WGS_SERVER_EXE also tests a packaged build."""
+import asyncio
+import io
 import json
 import os
 from pathlib import Path
@@ -6,9 +8,14 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 import urllib.request
+
+from wgs.server import ConsoleOutput, serve
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -17,6 +24,96 @@ def free_port(kind):
     with socket.socket(socket.AF_INET, kind) as sock:
         sock.bind(('127.0.0.1', 0))
         return sock.getsockname()[1]
+
+
+class BlockingConsole:
+    encoding = 'utf-8'
+
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def write(self, text):
+        self.entered.set()
+        self.release.wait(10)
+        return len(text)
+
+    def flush(self):
+        pass
+
+
+class ConsoleChecks(unittest.IsolatedAsyncioTestCase):
+    def test_blocked_output_has_bounded_memory(self):
+        sink = BlockingConsole()
+        output = ConsoleOutput(sink, capacity=4, chunk_size=16)
+        try:
+            output.write('block writer')
+            self.assertTrue(sink.entered.wait(2))
+            started = time.monotonic()
+            for _ in range(1000):
+                output.write('x' * 64)
+                output.flush()
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertEqual(output.queue.qsize(), 4)
+            self.assertGreater(output.dropped_chunks, 0)
+            self.assertTrue(all(len(chunk) <= 16 for chunk in output.queue.queue))
+        finally:
+            output.stop()
+            sink.release.set()
+            output.worker.join(timeout=2)
+        self.assertFalse(output.worker.is_alive())
+
+    def test_closed_console_does_not_raise(self):
+        sink = io.StringIO()
+        sink.close()
+        output = ConsoleOutput(sink)
+        output.write('manager detached')
+        output.worker.join(timeout=2)
+        self.assertFalse(output.worker.is_alive())
+        self.assertTrue(output.closed)
+        self.assertEqual(output.write('still running'), 13)
+
+    async def test_blocked_console_keeps_lobby_and_relay_alive(self):
+        sink = BlockingConsole()
+        args = SimpleNamespace(lobby_port=free_port(socket.SOCK_STREAM),
+                               relay_port=free_port(socket.SOCK_DGRAM), max_players=16)
+        loop = asyncio.get_running_loop()
+        task = None
+        with mock.patch('sys.stdout', sink), mock.patch('sys.stdin', io.StringIO()):
+            task = asyncio.create_task(serve(args, '127.0.0.1', '127.0.0.1'))
+            try:
+                self.assertTrue(await asyncio.to_thread(sink.entered.wait, 3))
+                url = 'http://127.0.0.1:%d/port/lobby/health' % args.lobby_port
+
+                def health():
+                    with urllib.request.urlopen(url, timeout=2) as response:
+                        return json.load(response)
+
+                self.assertTrue((await asyncio.to_thread(health))['ok'])
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as parent, \
+                        socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as child:
+                    for role, sock in enumerate((parent, child)):
+                        sock.bind(('127.0.0.1', 0))
+                        sock.setblocking(False)
+                        await loop.sock_sendto(sock, b'SMRC' + bytes((1, role, 0, 0))
+                                               + b'WGSTALL1', ('127.0.0.1', args.relay_port))
+                        ack, _ = await asyncio.wait_for(loop.sock_recvfrom(sock, 64), 2)
+                        self.assertEqual(ack, b'SMRA' + bytes((1, 0, 0, 0)) + b'WGSTALL1')
+                    await loop.sock_sendto(parent, b'parent payload', ('127.0.0.1', args.relay_port))
+                    payload, _ = await asyncio.wait_for(loop.sock_recvfrom(child, 64), 2)
+                    self.assertEqual(payload, b'parent payload')
+                    await loop.sock_sendto(child, b'child payload', ('127.0.0.1', args.relay_port))
+                    payload, _ = await asyncio.wait_for(loop.sock_recvfrom(parent, 64), 2)
+                    self.assertEqual(payload, b'child payload')
+                self.assertFalse(sink.release.is_set())
+            finally:
+                if task is not None:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                sink.release.set()
 
 
 class ManagedServer(unittest.TestCase):
@@ -55,18 +152,20 @@ class ManagedServer(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=3) as response:
             return json.load(response)
 
-    def test_lobby_relay_and_shutdown(self):
-        proc = self.start()
+    def wait_for_health(self, proc):
         deadline = time.monotonic() + 20
         while True:
             try:
-                health = self.health()
-                break
+                return self.health()
             except OSError:
                 if proc.poll() is not None or time.monotonic() > deadline:
                     self.log.seek(0)
                     self.fail('Server not ready: ' + self.log.read().decode(errors='replace'))
                 time.sleep(.1)
+
+    def test_lobby_relay_and_shutdown(self):
+        proc = self.start()
+        health = self.wait_for_health(proc)
         self.assertTrue(health['ok'])
         self.assertEqual(health['dial_max'], 16)
         room = self.post('create', {'v': 4, 'nick': 'wgs-check'})
@@ -91,6 +190,36 @@ class ManagedServer(unittest.TestCase):
                 if sys.platform != 'win32':
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind(('127.0.0.1', port))
+
+    def test_closed_udp_peer_does_not_stop_new_connections(self):
+        proc = self.start()
+        self.wait_for_health(proc)
+
+        def join(sock, code, role):
+            sock.settimeout(2)
+            sock.connect(('127.0.0.1', self.udp))
+            sock.send(b'SMRC' + bytes((1, role, 0, 0)) + code)
+            self.assertEqual(sock.recv(64), b'SMRA' + bytes((1, 0, 0, 0)) + code)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as parent:
+            join(parent, b'WGSCLOSE', 0)
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as departed:
+                join(departed, b'WGSCLOSE', 1)
+            # Forwarding to a now-closed localhost port elicits ICMP errors on
+            # Windows. A live HTTP socket alone would miss a dead UDP reader.
+            for _ in range(5):
+                parent.send(b'payload after peer quit')
+                time.sleep(.1)
+            self.assertTrue(self.health()['ok'])
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as fresh_parent, \
+                    socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as fresh_child:
+                join(fresh_parent, b'WGSFRESH', 0)
+                join(fresh_child, b'WGSFRESH', 1)
+                fresh_parent.send(b'still forwarding')
+                self.assertEqual(fresh_child.recv(64), b'still forwarding')
+        proc.stdin.write(b'stop\n')
+        proc.stdin.flush()
+        self.assertEqual(proc.wait(timeout=10), 0)
 
     def test_invalid_config_exits(self):
         self.config.write_text('{"relay_public_host":"0.0.0.0"}')

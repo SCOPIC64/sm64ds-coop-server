@@ -5,11 +5,86 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import queue
 import signal
 import socket
 import sys
 import threading
 import time
+
+
+class ConsoleOutput:
+    """Keep a slow manager's output pipe off the server's event loop."""
+
+    def __init__(self, stream, capacity=128, chunk_size=4096):
+        self.stream = stream
+        self.queue = queue.Queue(maxsize=capacity)
+        self.chunk_size = chunk_size
+        self.dropped_chunks = 0
+        self.closed = False
+        self._stopping = threading.Event()
+        self.worker = threading.Thread(target=self._write_output, daemon=True)
+        self.worker.start()
+
+    @property
+    def encoding(self):
+        return getattr(self.stream, 'encoding', 'utf-8')
+
+    def write(self, text):
+        for start in range(0, len(text), self.chunk_size):
+            if self.closed:
+                self.dropped_chunks += 1
+                continue
+            try:
+                self.queue.put_nowait(text[start:start + self.chunk_size])
+            except queue.Full:
+                self.dropped_chunks += 1
+        return len(text)
+
+    def flush(self):
+        # The worker flushes writes; print(..., flush=True) must never wait
+        # for WGS to consume its pipe.
+        pass
+
+    def stop(self):
+        self.closed = True
+        self._stopping.set()
+
+    def _write_output(self):
+        while not self._stopping.is_set() or not self.queue.empty():
+            try:
+                text = self.queue.get(timeout=.1)
+            except queue.Empty:
+                continue
+            try:
+                self.stream.write(text)
+                self.stream.flush()
+            except (OSError, ValueError):
+                # A detached/closed manager console does not stop networking.
+                self.stop()
+                return
+
+
+def disable_udp_connreset(sock):
+    if sys.platform != 'win32':
+        return
+    # Python's socket.ioctl only accepts a small list of commands. Use
+    # Winsock directly for SIO_UDP_CONNRESET = _WSAIOW(IOC_VENDOR, 12).
+    # A closed client sends ICMP PORT_UNREACHABLE; otherwise Windows turns
+    # that into a receive error which stops asyncio's Proactor UDP reader.
+    import ctypes
+    winsock = ctypes.WinDLL('ws2_32.dll')
+    ioctl = winsock.WSAIoctl
+    ioctl.argtypes = [ctypes.c_size_t, ctypes.c_uint32, ctypes.c_void_p,
+                      ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
+                      ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p,
+                      ctypes.c_void_p]
+    ioctl.restype = ctypes.c_int
+    disabled = ctypes.c_int(0)  # BOOL, not Python's one-byte ctypes.c_bool.
+    returned = ctypes.c_uint32()
+    if ioctl(sock.fileno(), 0x9800000C, ctypes.byref(disabled),
+             ctypes.sizeof(disabled), None, 0, ctypes.byref(returned), None, None):
+        raise OSError(winsock.WSAGetLastError(), 'Could not disable UDP connection resets')
 
 
 def configuration():
@@ -58,19 +133,26 @@ async def serve(args, bind, host):
     stop = asyncio.Event()
     lobby.Handler.timeout = lobby.HANDLER_TIMEOUT_S
     httpd = lobby.Server((bind, args.lobby_port), lobby.Handler)
+    original_stdout = sys.stdout
+    output = ConsoleOutput(original_stdout)
+    sys.stdout = output
     transport = None
+    raw_socket = None
     worker = None
     try:
+        raw_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        disable_udp_connreset(raw_socket)
+        raw_socket.setblocking(False)
+        raw_socket.bind((bind, args.relay_port))
+        try:
+            raw_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+            raw_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
+        except OSError:
+            pass
         transport, protocol = await loop.create_datagram_endpoint(
             lambda: relay.RelayProtocol(relay.DEFAULT_IDLE_S),
-            local_addr=(bind, args.relay_port), family=socket.AF_INET)
-        sock = transport.get_extra_info('socket')
-        if sock is not None:
-            try:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
-            except OSError:
-                pass
+            sock=raw_socket)
+        raw_socket = None  # The transport now owns and closes this socket.
         candidate = threading.Thread(target=httpd.serve_forever, daemon=True)
         candidate.start()
         worker = candidate
@@ -106,13 +188,18 @@ async def serve(args, bind, host):
                 print(protocol.stats_line(), flush=True)
                 last_stats = now
     finally:
+        if raw_socket is not None:
+            raw_socket.close()
         if transport is not None:
             transport.close()
         if worker is not None:
             httpd.shutdown()
             worker.join(timeout=5)
         httpd.server_close()
-        print('Server stopped.', flush=True)
+        print('Server stopped. Console chunks dropped: %d' % output.dropped_chunks,
+              flush=True)
+        sys.stdout = original_stdout
+        output.stop()
 
 
 def main():
