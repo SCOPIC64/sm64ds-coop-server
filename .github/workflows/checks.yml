@@ -16,6 +16,23 @@ jobs:
       - run: python lobby/test_security.py
       - run: python relay/test_client.py selftest
       - run: python -m unittest discover -s tests -v
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pyinstaller==6.22.3
+      - run: ./wgs/build.ps1
+      - run: python -m unittest discover -s tests -p test_wgs.py -v
+        env:
+          WGS_SERVER_EXE: ${{ github.workspace }}\wgs\dist\sm64ds-server\sm64ds-server.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sm64ds-wgs-windows
+          path: wgs/dist/sm64ds-server/
   deployment:
     runs-on: ubuntu-latest
     timeout-minutes: 10

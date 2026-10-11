@@ -19,6 +19,11 @@ The normal project URL is `https://scopic64.github.io/sm64ds-coop-server/`;
 the workflow reports the actual deployed URL. The blank page is static. The
 lobby API and UDP relay still require a separate online server.
 
+## Run on Windows with WGS
+
+See [the WGS setup guide](wgs/README.md) for the combined Windows lobby and
+relay executable, custom plugin settings, and LAN/internet networking.
+
 ## Run the actual server online
 
 Use an online Linux host with Docker Engine and the Compose plugin, a public

@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 *.log
 test-output/
+wgs/build/
+wgs/dist/
+wgs/*.spec
+wgs/server.json
