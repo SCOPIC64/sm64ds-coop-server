@@ -62,3 +62,18 @@ external VM for the lobby and relay to keep the home address private.
 launcher. Set `WGS_SERVER_EXE` to the absolute built executable path to run the
 same checks against the packaged Windows app. Checks include real HTTP room
 creation, bidirectional UDP forwarding, shutdown and port-conflict cleanup.
+
+## Player profiles and room moderation
+
+Version 5 clients supply a display name, saved install ID, character and an
+eight-part RGB palette. The launch plan freezes character/palette order with
+the world slots so matching characters can have different colors. Older client
+contracts retain their existing response shapes and ordinary chat behavior.
+
+Chat supports `/help`, `/players`, `/kick`, `/ban`, `/unban`, `/mod` and `/unmod`.
+The host appoints moderators; moderators may remove ordinary players, but
+cannot remove the host or each other. Match-startup removals are refused.
+Room bans use saved install IDs and last only while that room exists. They
+distinguish people sharing an address, but are not permanent account bans.
+Resetting a client profile creates a new install identity. Command handling is
+a fixed allowlist and never executes server console or shell commands.

@@ -34,9 +34,9 @@ THE SECURITY LAW, in the order it is applied to every request:
      not an ignore: the launcher and this server ship together, so a field that
      turns up without a version bump is a bug or an attack and there is no
      third option.
-  5. Nothing a client sends is ever parsed for meaning, logged, used in a file
-     name, or interpolated into anything. `nick` and `text` are opaque bytes
-     that go in and come back out.
+  5. Nicknames and messages are never logged, used in file names or executed.
+     Version 5 recognizes only the fixed chat-command allowlist, with room
+     role checks; other chat text and earlier versions remain opaque.
 
 THE KEEP-ALIVE DRAIN TRAP, carried over from port_ingest rather than
 rediscovered. With HTTP/1.1 keep-alive, replying to a request WITHOUT reading
@@ -112,7 +112,7 @@ CONTRACT_MIN = 1
 # (SM64DS_ADVENTURE=1 + SM64DS_LEVEL) instead of a versus arena
 # (SM64DS_VS_MAP); the relay and the seam are already session-type blind, so
 # nothing below the lobby changes.
-CONTRACT_V = 4
+CONTRACT_V = 5
 V_SESSION = 4    # create.session_type
 
 # The session types a room may be. "vs" is the versus match; "adventure" is the
@@ -494,7 +494,7 @@ REJ_AUTH = 0
 class Member(object):
     __slots__ = ("seat", "token", "nick", "display", "playing", "pre_ok",
                  "armed", "seen", "chat_allowance", "chat_stamp", "last_addr",
-                 "color", "shoes", "v")
+                 "color", "shoes", "v", "player_id", "palette", "character")
 
     def __init__(self, seat, token, nick, playing, pre_ok, now, addr="",
                  color="", shoes="", v=1):
@@ -503,6 +503,9 @@ class Member(object):
         # below WIDE_MIN_V, because that member's build would be handed a
         # sixteen-field plan it refuses at spawn and take the match down.
         self.v = v
+        self.player_id = ""
+        self.palette = ":::::::"
+        self.character = 0
         self.seat = seat
         self.token = token
         self.nick = nick            # exactly as sent, never rewritten
@@ -625,6 +628,11 @@ class Room(object):
         # next poll instead of a bare "you are not a member".
         self.kicked_addr = {}
         self.kicked_token = {}
+        self.moderators = set()
+        self.banned_ids = set()
+        self.banned_names = {}
+        self.player_palettes = ""
+        self.player_characters = ""
 
     # -- roster ----------------------------------------------------------
 
@@ -1152,9 +1160,11 @@ VERB_FIELDS = {
                   # appear from v2. session_type is a v4 optional (ADVENTURE);
                   # do_create checks its value against SESSION_TYPES.
                   {"pre_ok": 1, "color": V_COLOR, "shoes": V_COLOR,
-                   "session_type": V_SESSION, "adventure_save": V_SESSION}),
+                   "session_type": V_SESSION, "adventure_save": V_SESSION,
+                   "player_id": 5, "palette": 5, "character": 5}),
     "join":      (("v", "room", "nick"),
-                  {"pre_ok": 1, "color": V_COLOR, "shoes": V_COLOR}),
+                  {"pre_ok": 1, "color": V_COLOR, "shoes": V_COLOR,
+                   "player_id": 5, "palette": 5, "character": 5}),
     "poll":      (("v", "room", "token", "cursor"), {"wait": 1}),
     "chat":      (("v", "room", "token", "text"), {}),
     "params":    (("v", "room", "token", "map", "win_mode"),
@@ -1243,10 +1253,28 @@ def refuse_member(room, token, now):
     return 403, {"error": "not_a_member"}
 
 
+def valid_player_preferences(body):
+    ident = body.get("player_id", "")
+    palette = body.get("palette", ":::::::")
+    character = body.get("character", 0)
+    return (isinstance(ident, str) and (not ident or (len(ident) == 32 and all(c in "0123456789abcdef" for c in ident)))
+            and isinstance(palette, str) and len(palette.split(":")) == 8
+            and all(not p or (len(p) == 6 and all(c in "0123456789abcdef" for c in p)) for p in palette.split(":"))
+            and type(character) is int and 0 <= character <= 3)
+
+
+def apply_player_preferences(member, body):
+    member.player_id = body.get("player_id", "")
+    member.palette = body.get("palette", ":::::::")
+    member.character = body.get("character", 0)
+
+
 def do_create(body, who, now):
     err = shape_for("create", body)
     if err:
         return 400, {"error": err}
+    if not valid_player_preferences(body):
+        return 400, {"error": "bad_player_preferences"}
     nick, err = v_nick(body)
     if err:
         return 400, {"error": err}
@@ -1303,6 +1331,7 @@ def do_create(body, who, now):
     # later code has to handle: `apply_dial` refuses to demote seat 1.
     m = Member(1, token, nick, room.match_players >= 1, pre_ok, now, who,
                color, shoes, request_version(body))
+    apply_player_preferences(m, body)
     room.members[1] = m
     room.by_token[token] = 1
     room.host_seat = 1
@@ -1317,6 +1346,8 @@ def do_join(body, who, now):
     err = shape_for("join", body)
     if err:
         return 400, {"error": err}
+    if not valid_player_preferences(body):
+        return 400, {"error": "bad_player_preferences"}
     code, err = v_room(body)
     if err:
         return 400, {"error": err}
@@ -1339,6 +1370,8 @@ def do_join(body, who, now):
     if room is None or room.state == "closed":
         return 404, {"error": "no_such_room"}
     room.forget_old_kicks(now)
+    if body.get("player_id") in room.banned_ids:
+        return 403, {"error": "banned"}
     if who in room.kicked_addr:
         return 403, {"error": "kicked"}
     if len(room.members) >= MAX_SEATS:
@@ -1368,6 +1401,7 @@ def do_join(body, who, now):
     playing = room.playing_count() < room.match_players
     room.members[seat] = Member(seat, token, nick, playing, pre_ok, now, who,
                                 color, shoes, request_version(body))
+    apply_player_preferences(room.members[seat], body)
     room.by_token[token] = seat
     room.refresh_displays()
     room.push("joined", seat=seat, display=room.members[seat].display)
@@ -1411,9 +1445,61 @@ def do_chat(body, who, now):
         return 429, {"error": "too_fast"}
     m.chat_allowance -= 1.0
 
-    # The text is appended and never read. It is not logged, not parsed, and
-    # not stored anywhere but the room's own 40-line ring.
+    # Only v5 slash commands enter the fixed room-role dispatcher. Ordinary
+    # text is never logged and lives only in the room's 40-line event ring.
+    if body.get("v", 1) >= 5 and text.startswith("/"):
+        return chat_command(room, seat, text, now)
     room.push("chat", seat=seat, display=m.display, text=text)
+    return 200, {"cursor": room.seq}
+
+
+def chat_command(room, seat, text, now):
+    command, _, argument = text.partition(" ")
+    command = command.lower()
+    argument = argument.strip()
+    if command in ("/help", "/players"):
+        line = ("T: chat | /players | /kick NAME or SEAT | /ban | /unban | /mod | /unmod"
+                if command == "/help" else " | ".join("%d: %s%s" % (s, m.display,
+                    " [HOST]" if s == room.host_seat else " [MOD]" if s in room.moderators else "")
+                    for s, m in sorted(room.members.items())))
+        room.push("chat", seat=0, display="Server", text=line)
+        return 200, {"cursor": room.seq}
+    if command not in ("/kick", "/ban", "/unban", "/mod", "/unmod"):
+        return 400, {"error": "Unknown command. Use /help."}
+    host = seat == room.host_seat
+    if not host and (seat not in room.moderators or command in ("/mod", "/unmod")):
+        return 403, {"error": "Only the host or an appointed moderator can do that."}
+    if command == "/unban":
+        ident = room.banned_names.pop(argument.casefold(), None)
+        if not ident:
+            return 400, {"error": "No room ban for that username."}
+        room.banned_ids.discard(ident)
+        line = "%s was unbanned." % argument
+    else:
+        targets = [s for s, m in room.members.items() if str(s) == argument or m.display.casefold() == argument.casefold()]
+        if len(targets) != 1:
+            return 400, {"error": "Choose a player name or seat number; use /players."}
+        target = targets[0]
+        if target == room.host_seat or (target in room.moderators and not host):
+            return 403, {"error": "That player is protected from moderator actions."}
+        victim = room.members[target]
+        if command in ("/mod", "/unmod"):
+            if command == "/mod": room.moderators.add(target)
+            else: room.moderators.discard(target)
+            line = "%s %s." % (victim.display, "is now a moderator" if command == "/mod" else "is no longer a moderator")
+        else:
+            if room.state == "arming":
+                return 409, {"error": "Wait until the game has started."}
+            if command == "/ban":
+                if not victim.player_id:
+                    return 400, {"error": "Room bans require an updated game client."}
+                room.banned_ids.add(victim.player_id)
+                room.banned_names[victim.display.casefold()] = victim.player_id
+            room.kicked_token[victim.token] = float("inf")
+            room.moderators.discard(target)
+            line = "%s was %s." % (victim.display, "banned for this room" if command == "/ban" else "kicked")
+            drop_member(room, target, "banned" if command == "/ban" else "kicked")
+    room.push("chat", seat=0, display="Server", text=line)
     return 200, {"cursor": room.seq}
 
 
@@ -1799,6 +1885,8 @@ def member_plan(room, seat):
         if getattr(room, "adventure_save", ""):
             plan["adventure_save"] = room.adventure_save
             plan["netmode"] = "lockstep"
+        plan["player_palettes"] = room.player_palettes
+        plan["player_characters"] = room.player_characters
     return plan
 
 
@@ -1921,6 +2009,9 @@ def do_start(body, who, now):
     room.slot_of = assign_slots(room)
     room.names = build_names(room)
     room.colors = build_colors(room)
+    ordered = [room.members[s] for s, slot in sorted(room.slot_of.items(), key=lambda p: p[1])]
+    room.player_palettes = ",".join(m.palette for m in ordered)
+    room.player_characters = ",".join(str(m.character) for m in ordered)
     for m in room.members.values():
         m.armed = False
     room.state = "arming"

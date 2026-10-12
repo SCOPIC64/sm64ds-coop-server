@@ -802,8 +802,8 @@ def test_dial_is_v2_only():
           st == 400 and out["error"] == "bad_field", (st, out))
     st, out = _params(code, token, v=2, match_players=2)
     check("the same body at v2 is accepted", st == 200, (st, out))
-    check("the version range is a range, and it is 1..4",
-          (S.CONTRACT_MIN, S.CONTRACT_V) == (1, 4))
+    check("the version range is a range, and it is 1..5",
+          (S.CONTRACT_MIN, S.CONTRACT_V) == (1, 5))
     check("and the gate on the field is named, not spelled 2 at the check",
           S.V_DIAL == 2)
     # run vs16: the DIAL ARRIVED in v2 and stays gated at v2 forever -- a field
@@ -841,6 +841,9 @@ _FIELD_SAMPLES = {
     "shoes": "1a2b3c",
     "session_type": "adventure",
     "adventure_save": "38303030" + "00" * 64,
+    "player_id": "a" * 32,
+    "palette": "ff0000:::::::00ffff",
+    "character": 1,
 }
 
 
@@ -1137,7 +1140,7 @@ def test_opacity():
               # v2: the two colours this player picked.
               "color", "shoes",
               # 0.3.2: the contract version this member joined at.
-              "v"},
+              "v", "player_id", "palette", "character"},
           Member_fields(room.members[1]))
     check("the only client address kept is the one a kick needs, and it never "
           "reaches a client",
@@ -2125,9 +2128,9 @@ def test_colors():
                            "shoes": "0000ff"}, "10.0.0.1", 1000.0)
     check("a v1 create carrying colours is refused: the bump has to mean "
           "something", st == 400 and out["error"] == "bad_field", (st, out))
-    check("v1 through v4 are the versions this server answers, and nothing "
+    check("v1 through v5 are the versions this server answers, and nothing "
           "else",
-          (S.CONTRACT_MIN, S.CONTRACT_V) == (1, 4),
+          (S.CONTRACT_MIN, S.CONTRACT_V) == (1, 5),
           (S.CONTRACT_MIN, S.CONTRACT_V))
 
     # -- create and join with colours -------------------------------------
